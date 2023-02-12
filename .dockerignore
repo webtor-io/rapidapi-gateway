@@ -7,6 +7,6 @@ up.sh
 README.md
 Makefile
 LICENSE
-rest-api
+rapidapi-gateway
 __debug_bin
 .DS_Store

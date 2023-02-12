@@ -206,7 +206,14 @@ func (s *Web) proxyRequestHandler(proxy *httputil.ReverseProxy) func(http.Respon
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		subType := SubscriptionType(strings.ToLower(r.Header.Get("X-RapidAPI-Subscription")))
+		subType := SubscriptionTypeBasic
+		rapSub := strings.ToLower(r.Header.Get("X-RapidAPI-Subscription"))
+		for k := range s.rates {
+			if strings.HasPrefix(rapSub, string(k)) {
+				subType = k
+				break
+			}
+		}
 		features := s.rates[subType]
 		claims := &StandardClaims{
 			SessionID:   fmt.Sprintf("%x", sha1.Sum([]byte(r.Header.Get("X-RapidAPI-User")+features.Rate+strconv.Itoa(features.Connections)))),
