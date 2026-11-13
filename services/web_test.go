@@ -127,3 +127,43 @@ func TestProxyHandlerUid(t *testing.T) {
 		t.Fatalf("client X-Token reached upstream: uid %v", m["uid"])
 	}
 }
+
+func TestInternalPathIs404(t *testing.T) {
+	hits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+	defer upstream.Close()
+	s := &Web{rapidSecret: "proxy-secret", wSecret: "secret",
+		rates: map[SubscriptionType]Features{SubscriptionTypeBasic: {Rate: "20M", Connections: 2}}}
+	pr, _ := s.newProxy(upstream.URL)
+	h := s.proxyRequestHandler(pr)
+	serve := func(target, secret string) int {
+		req := httptest.NewRequest("GET", target, nil)
+		req.Header.Set("X-RapidAPI-Proxy-Secret", secret)
+		req.Header.Set("X-RapidAPI-User", "u1")
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		return rec.Code
+	}
+	uid := strings.Repeat("0", 40)
+	for _, target := range []string{
+		"/internal/private-trackers/" + uid,
+		"/internal", "/internal/",
+		"//internal/private-trackers/" + uid,
+		"/./internal/private-trackers/" + uid,
+		"/resource/../internal/private-trackers/" + uid,
+		"/internal%2Fprivate-trackers%2F" + uid,
+		"/resource%2F..%2Finternal/private-trackers/" + uid,
+	} {
+		for _, secret := range []string{"proxy-secret", "wrong"} {
+			if code := serve(target, secret); code != http.StatusNotFound || hits != 0 {
+				t.Fatalf("%s (secret %s): code %d, upstream hits %d; want 404 and no proxying", target, secret, code, hits)
+			}
+		}
+	}
+	for _, target := range []string{"/internalx", "/resource/" + strings.Repeat("a", 40) + "/internal"} {
+		before := hits
+		if code := serve(target, "proxy-secret"); code != http.StatusOK || hits != before+1 {
+			t.Fatalf("%s: code %d, want proxied as today", target, code)
+		}
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -209,8 +210,19 @@ func rapidAPIUid(user string) string {
 	return fmt.Sprintf("%x", sha1.Sum([]byte("rapidapi:"+user)))
 }
 
+// isInternalPath reports whether p (the decoded URL path) addresses rest-api's
+// /internal/ endpoints once dot segments and repeated slashes are resolved.
+func isInternalPath(p string) bool {
+	c := path.Clean("/" + p)
+	return c == "/internal" || strings.HasPrefix(c, "/internal/")
+}
+
 func (s *Web) proxyRequestHandler(proxy *httputil.ReverseProxy) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if isInternalPath(r.URL.Path) {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Header.Get("X-RapidAPI-Proxy-Secret") != s.rapidSecret {
 			w.WriteHeader(http.StatusForbidden)
 			return
