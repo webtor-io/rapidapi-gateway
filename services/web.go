@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ type StandardClaims struct {
 	Role        string `json:"role"`
 	SessionID   string `json:"sessionID"`
 	Domain      string `json:"domain"`
+	Uid         string `json:"uid,omitempty"`
 	jwt.StandardClaims
 }
 
@@ -200,8 +202,29 @@ func (s *Web) newProxy(addr string) (*httputil.ReverseProxy, error) {
 	return httputil.NewSingleHostReverseProxy(url), nil
 }
 
+// rapidAPIUid namespaces RapidAPI users so their uid never equals a site uid.
+func rapidAPIUid(user string) string {
+	if user == "" {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha1.Sum([]byte("rapidapi:"+user)))
+}
+
+// isInternalPath reports whether p addresses rest-api's /internal/ endpoints
+// once dot segments and repeated slashes are resolved. Callers check both the
+// decoded and the escaped path: rest-api routes on the escaped one, where
+// "%2F..%2F" inside a segment is not a dot segment.
+func isInternalPath(p string) bool {
+	c := path.Clean("/" + p)
+	return c == "/internal" || strings.HasPrefix(c, "/internal/")
+}
+
 func (s *Web) proxyRequestHandler(proxy *httputil.ReverseProxy) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if isInternalPath(r.URL.Path) || isInternalPath(r.URL.EscapedPath()) {
+			http.NotFound(w, r)
+			return
+		}
 		if r.Header.Get("X-RapidAPI-Proxy-Secret") != s.rapidSecret {
 			w.WriteHeader(http.StatusForbidden)
 			return
@@ -221,6 +244,7 @@ func (s *Web) proxyRequestHandler(proxy *httputil.ReverseProxy) func(http.Respon
 			Rate:        features.Rate,
 			Connections: features.Connections,
 			Domain:      "rapidapi.com",
+			Uid:         rapidAPIUid(r.Header.Get("X-RapidAPI-User")),
 			StandardClaims: jwt.StandardClaims{
 				ExpiresAt: time.Now().Add(24 * 7 * time.Hour).Unix(),
 			},
