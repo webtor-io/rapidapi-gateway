@@ -24,6 +24,7 @@ type StandardClaims struct {
 	Role        string `json:"role"`
 	SessionID   string `json:"sessionID"`
 	Domain      string `json:"domain"`
+	Uid         string `json:"uid,omitempty"`
 	jwt.StandardClaims
 }
 
@@ -200,6 +201,14 @@ func (s *Web) newProxy(addr string) (*httputil.ReverseProxy, error) {
 	return httputil.NewSingleHostReverseProxy(url), nil
 }
 
+// rapidAPIUid namespaces RapidAPI users so their uid never equals a site uid.
+func rapidAPIUid(user string) string {
+	if user == "" {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha1.Sum([]byte("rapidapi:"+user)))
+}
+
 func (s *Web) proxyRequestHandler(proxy *httputil.ReverseProxy) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-RapidAPI-Proxy-Secret") != s.rapidSecret {
@@ -221,6 +230,7 @@ func (s *Web) proxyRequestHandler(proxy *httputil.ReverseProxy) func(http.Respon
 			Rate:        features.Rate,
 			Connections: features.Connections,
 			Domain:      "rapidapi.com",
+			Uid:         rapidAPIUid(r.Header.Get("X-RapidAPI-User")),
 			StandardClaims: jwt.StandardClaims{
 				ExpiresAt: time.Now().Add(24 * 7 * time.Hour).Unix(),
 			},
