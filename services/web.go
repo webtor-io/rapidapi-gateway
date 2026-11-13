@@ -210,8 +210,10 @@ func rapidAPIUid(user string) string {
 	return fmt.Sprintf("%x", sha1.Sum([]byte("rapidapi:"+user)))
 }
 
-// isInternalPath reports whether p (the decoded URL path) addresses rest-api's
-// /internal/ endpoints once dot segments and repeated slashes are resolved.
+// isInternalPath reports whether p addresses rest-api's /internal/ endpoints
+// once dot segments and repeated slashes are resolved. Callers check both the
+// decoded and the escaped path: rest-api routes on the escaped one, where
+// "%2F..%2F" inside a segment is not a dot segment.
 func isInternalPath(p string) bool {
 	c := path.Clean("/" + p)
 	return c == "/internal" || strings.HasPrefix(c, "/internal/")
@@ -219,7 +221,7 @@ func isInternalPath(p string) bool {
 
 func (s *Web) proxyRequestHandler(proxy *httputil.ReverseProxy) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if isInternalPath(r.URL.Path) {
+		if isInternalPath(r.URL.Path) || isInternalPath(r.URL.EscapedPath()) {
 			http.NotFound(w, r)
 			return
 		}

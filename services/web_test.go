@@ -153,6 +153,8 @@ func TestInternalPathIs404(t *testing.T) {
 		"/resource/../internal/private-trackers/" + uid,
 		"/internal%2Fprivate-trackers%2F" + uid,
 		"/resource%2F..%2Finternal/private-trackers/" + uid,
+		"/internal/private-trackers/%2F..%2F..%2Fresource",
+		"/internal/private-trackers/..%2F..%2Fx",
 	} {
 		for _, secret := range []string{"proxy-secret", "wrong"} {
 			if code := serve(target, secret); code != http.StatusNotFound || hits != 0 {
