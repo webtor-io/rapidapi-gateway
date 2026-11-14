@@ -3,6 +3,7 @@ package services
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,5 +77,95 @@ func TestProxyHandler(t *testing.T) {
 	if c.Role != "pro" || c.Rate != "100M" || c.Connections != 10 || c.Domain != "rapidapi.com" ||
 		len(c.SessionID) != 40 || c.ExpiresAt < exp-60 || c.ExpiresAt > exp {
 		t.Fatalf("claims %+v", c)
+	}
+}
+
+func TestRapidAPIUid(t *testing.T) {
+	if got := rapidAPIUid("u1"); got != "124795966a51f08416371e3cfc7ac802eb3d5f05" {
+		t.Fatalf("rapidAPIUid(u1) = %s, want sha1(\"rapidapi:u1\")", got)
+	}
+	if rapidAPIUid("u1") == "c5ea71554c774daf7fab320fc3476afc0617eb00" {
+		t.Fatal("uid without the rapidapi: prefix can collide with a site uid")
+	}
+	if got := rapidAPIUid(""); got != "" {
+		t.Fatalf("empty user: uid %q, want none", got)
+	}
+}
+
+func TestProxyHandlerUid(t *testing.T) {
+	var gotToken string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { gotToken = r.Header.Get("X-Token") }))
+	defer upstream.Close()
+	s := &Web{rapidSecret: "proxy-secret", wKey: "key", wSecret: "secret",
+		rates: map[SubscriptionType]Features{SubscriptionTypeBasic: {Rate: "20M", Connections: 2}}}
+	pr, _ := s.newProxy(upstream.URL)
+	h := s.proxyRequestHandler(pr)
+	claimsOf := func(user, clientToken string) jwt.MapClaims {
+		req := httptest.NewRequest("GET", "/resource/x", nil)
+		req.Header.Set("X-RapidAPI-Proxy-Secret", "proxy-secret")
+		if user != "" {
+			req.Header.Set("X-RapidAPI-User", user)
+		}
+		if clientToken != "" {
+			req.Header.Set("X-Token", clientToken)
+		}
+		h(httptest.NewRecorder(), req)
+		m := jwt.MapClaims{}
+		if _, err := jwt.ParseWithClaims(gotToken, m, func(*jwt.Token) (interface{}, error) { return []byte("secret"), nil }); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if m := claimsOf("u1", ""); m["uid"] != "124795966a51f08416371e3cfc7ac802eb3d5f05" {
+		t.Fatalf("uid claim %v", m["uid"])
+	}
+	if m := claimsOf("", ""); m["uid"] != nil {
+		t.Fatalf("empty user must carry no uid claim, got %v", m["uid"])
+	}
+	forged, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"uid": strings.Repeat("0", 40)}).SignedString([]byte("secret"))
+	if m := claimsOf("u1", forged); m["uid"] != "124795966a51f08416371e3cfc7ac802eb3d5f05" {
+		t.Fatalf("client X-Token reached upstream: uid %v", m["uid"])
+	}
+}
+
+func TestInternalPathIs404(t *testing.T) {
+	hits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+	defer upstream.Close()
+	s := &Web{rapidSecret: "proxy-secret", wSecret: "secret",
+		rates: map[SubscriptionType]Features{SubscriptionTypeBasic: {Rate: "20M", Connections: 2}}}
+	pr, _ := s.newProxy(upstream.URL)
+	h := s.proxyRequestHandler(pr)
+	serve := func(target, secret string) int {
+		req := httptest.NewRequest("GET", target, nil)
+		req.Header.Set("X-RapidAPI-Proxy-Secret", secret)
+		req.Header.Set("X-RapidAPI-User", "u1")
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		return rec.Code
+	}
+	uid := strings.Repeat("0", 40)
+	for _, target := range []string{
+		"/internal/private-trackers/" + uid,
+		"/internal", "/internal/",
+		"//internal/private-trackers/" + uid,
+		"/./internal/private-trackers/" + uid,
+		"/resource/../internal/private-trackers/" + uid,
+		"/internal%2Fprivate-trackers%2F" + uid,
+		"/resource%2F..%2Finternal/private-trackers/" + uid,
+		"/internal/private-trackers/%2F..%2F..%2Fresource",
+		"/internal/private-trackers/..%2F..%2Fx",
+	} {
+		for _, secret := range []string{"proxy-secret", "wrong"} {
+			if code := serve(target, secret); code != http.StatusNotFound || hits != 0 {
+				t.Fatalf("%s (secret %s): code %d, upstream hits %d; want 404 and no proxying", target, secret, code, hits)
+			}
+		}
+	}
+	for _, target := range []string{"/internalx", "/resource/" + strings.Repeat("a", 40) + "/internal"} {
+		before := hits
+		if code := serve(target, "proxy-secret"); code != http.StatusOK || hits != before+1 {
+			t.Fatalf("%s: code %d, want proxied as today", target, code)
+		}
 	}
 }
